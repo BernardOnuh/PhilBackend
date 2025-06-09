@@ -8,7 +8,7 @@ const axios = require('axios');
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5002;
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
@@ -242,27 +242,27 @@ app.post('/api/payments/verify', async (req, res) => {
     }
 });
 
-// Get customer orders
+// Get customer orders by email (simplified access)
 app.get('/api/orders/customer/:email', async (req, res) => {
     try {
         const { email } = req.params;
         
         const customer = await Customer.findOne({ email });
         if (!customer) {
-            return res.status(404).json({ success: false, error: 'Customer not found' });
+            return res.status(404).json({ success: false, error: 'No orders found for this email address' });
         }
         
         const orders = await Order.find({ customer: customer._id })
             .populate('customer')
             .sort({ createdAt: -1 });
         
-        res.json({ success: true, orders });
+        res.json({ success: true, orders, customer: customer });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Get single order by order code (public route)
+// Get single order by order code (internal/company use)
 app.get('/api/orders/track/:orderCode', async (req, res) => {
     try {
         const { orderCode } = req.params;
@@ -273,53 +273,64 @@ app.get('/api/orders/track/:orderCode', async (req, res) => {
             return res.status(404).json({ success: false, error: 'Order not found' });
         }
         
-        // Return limited customer info for privacy
-        const orderData = {
-            ...order.toObject(),
-            customer: {
-                firstName: order.customer.firstName,
-                lastName: order.customer.lastName,
-                email: order.customer.email.replace(/(.{2})(.*)(@.*)/, '$1***$3') // Partially hide email
-            }
-        };
-        
-        res.json({ success: true, order: orderData });
+        // Return full order details for internal use
+        res.json({ success: true, order });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Verify order ownership (requires both order code and email)
-app.post('/api/orders/verify-ownership', async (req, res) => {
+// Get single order details by email and order code (customer verification)
+app.post('/api/orders/verify', async (req, res) => {
     try {
-        const { orderCode, email } = req.body;
+        const { email, orderCode } = req.body;
         
-        if (!orderCode || !email) {
+        if (!email) {
             return res.status(400).json({ 
                 success: false, 
-                error: 'Order code and email are required' 
+                error: 'Email address is required' 
             });
         }
         
-        const order = await Order.findOne({ orderCode }).populate('customer');
-        
-        if (!order) {
-            return res.status(404).json({ success: false, error: 'Order not found' });
-        }
-        
-        // Check if email matches the customer who placed the order
-        if (order.customer.email.toLowerCase() !== email.toLowerCase()) {
-            return res.status(403).json({ 
-                success: false, 
-                error: 'Email does not match order owner' 
+        // If orderCode is provided, get specific order
+        if (orderCode) {
+            const order = await Order.findOne({ orderCode }).populate('customer');
+            
+            if (!order) {
+                return res.status(404).json({ success: false, error: 'Order not found' });
+            }
+            
+            // Check if email matches the customer who placed the order
+            if (order.customer.email.toLowerCase() !== email.toLowerCase()) {
+                return res.status(403).json({ 
+                    success: false, 
+                    error: 'This order does not belong to the provided email address' 
+                });
+            }
+            
+            res.json({ 
+                success: true, 
+                message: 'Order verified successfully',
+                order 
+            });
+        } else {
+            // If no orderCode, return all orders for the email
+            const customer = await Customer.findOne({ email: email.toLowerCase() });
+            
+            if (!customer) {
+                return res.status(404).json({ success: false, error: 'No orders found for this email address' });
+            }
+            
+            const orders = await Order.find({ customer: customer._id })
+                .populate('customer')
+                .sort({ createdAt: -1 });
+            
+            res.json({ 
+                success: true, 
+                orders,
+                customer
             });
         }
-        
-        res.json({ 
-            success: true, 
-            message: 'Order ownership verified',
-            order 
-        });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
